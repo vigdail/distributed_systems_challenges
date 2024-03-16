@@ -21,4 +21,7 @@ broadcast:
 3a: broadcast
 	$(maelstrom_path) test -w broadcast --bin bin/broadcast --node-count 1 --time-limit 20 --rate 10
 
+3b: broadcast
+	$(maelstrom_path) test -w broadcast --bin bin/broadcast --node-count 5 --time-limit 20 --rate 10
+
 .PHONY: serve echo unique-ids broadcast 1 2 3a
