@@ -1,10 +1,12 @@
 package broadcast
 
 import (
+	"context"
 	"encoding/json"
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 	"log"
 	"sync"
+	"time"
 )
 
 const Broadcast = "broadcast"
@@ -83,7 +85,9 @@ func (s *Service) BroadcastHandler(msg maelstrom.Message) error {
 	s.messages[request.Message] = true
 	for _, n := range s.neighbors {
 		go func(node string) {
-			_ = s.node.Send(node, request)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_, _ = s.node.SyncRPC(ctx, node, request)
 		}(n)
 	}
 	s.messagesMu.Unlock()
