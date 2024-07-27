@@ -12,6 +12,9 @@ unique-ids:
 broadcast:
 	go build -o ./bin ./cmd/broadcast
 
+other:
+	go build -o ./bin ./cmd/other
+
 1: echo
 	$(maelstrom_path) test -w echo --bin bin/echo --node-count 1 --time-limit 10
 
@@ -24,4 +27,7 @@ broadcast:
 3b: broadcast
 	$(maelstrom_path) test -w broadcast --bin bin/broadcast --node-count 5 --time-limit 20 --rate 10
 
-.PHONY: serve echo unique-ids broadcast 1 2 3a
+3c: broadcast
+	$(maelstrom_path) test -w broadcast --bin bin/broadcast --node-count 5 --time-limit 20 --rate 10 --nemesis partition
+
+.PHONY: serve echo unique-ids broadcast 1 2 3a 3b 3c

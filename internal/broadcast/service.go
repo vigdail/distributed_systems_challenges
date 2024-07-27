@@ -1,12 +1,10 @@
 package broadcast
 
 import (
-	"context"
 	"encoding/json"
-	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
-	"log"
 	"sync"
-	"time"
+
+	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
 const Broadcast = "broadcast"
@@ -19,6 +17,10 @@ const TopologyOk = "topology_ok"
 type BroadcastRequest struct {
 	Type    string `json:"type"`
 	Message int    `json:"message"`
+}
+
+func MakeBroadcastRequest(message int) BroadcastRequest {
+	return BroadcastRequest{Broadcast, message}
 }
 
 type BroadcastResponse struct {
@@ -50,19 +52,27 @@ func MakeTopologyResponse() TopologyResponse {
 	return TopologyResponse{TopologyOk}
 }
 
+type GossipMessage struct {
+	Dst     string
+	Message int
+}
+
 type Service struct {
 	node      *maelstrom.Node
 	neighbors []string
 
-	messagesMu sync.Mutex
+	messagesMu sync.RWMutex
 	messages   map[int]bool
+
+	Broadcasts chan GossipMessage
 }
 
 func MakeService(node *maelstrom.Node) Service {
 	return Service{
 		node, make([]string, 0),
-		sync.Mutex{},
+		sync.RWMutex{},
 		make(map[int]bool),
+		make(chan GossipMessage, 100),
 	}
 }
 
@@ -71,37 +81,37 @@ func (s *Service) BroadcastHandler(msg maelstrom.Message) error {
 	if err := json.Unmarshal(msg.Body, &request); err != nil {
 		return err
 	}
-	go func() {
-		if err := s.node.Reply(msg, MakeBroadcastResponse()); err != nil {
-			log.Fatal(err)
-		}
-	}()
+
+	s.messagesMu.Lock()
+	s.messages[request.Message] = true
+	s.messagesMu.Unlock()
+
+	s.Gossip(msg.Src, request.Message)
+
+	return s.node.Reply(msg, MakeBroadcastResponse())
+}
+
+func (s *Service) GossipHandler(msg maelstrom.Message) error {
+	var request GossipRequest
+	if err := json.Unmarshal(msg.Body, &request); err != nil {
+		return err
+	}
 
 	s.messagesMu.Lock()
 	if _, exist := s.messages[request.Message]; exist {
 		s.messagesMu.Unlock()
-		return nil
+		return s.node.Reply(msg, MakeGossipResponse())
 	}
 	s.messages[request.Message] = true
-	for _, n := range s.neighbors {
-		go func(node string) {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			_, _ = s.node.SyncRPC(ctx, node, request)
-		}(n)
-	}
 	s.messagesMu.Unlock()
 
-	return nil
+	s.Gossip(msg.Src, request.Message)
+
+	return s.node.Reply(msg, MakeGossipResponse())
 }
 
 func (s *Service) ReadHandler(msg maelstrom.Message) error {
-	s.messagesMu.Lock()
-	messages := make([]int, 0, len(s.messages))
-	for m := range s.messages {
-		messages = append(messages, m)
-	}
-	s.messagesMu.Unlock()
+	messages := s.GetMessages()
 	response := MakeReadResponse(messages)
 	return s.node.Reply(msg, response)
 }
@@ -116,4 +126,42 @@ func (s *Service) TopologyHandler(msg maelstrom.Message) error {
 
 	response := MakeTopologyResponse()
 	return s.node.Reply(msg, response)
+}
+
+func (s *Service) Gossip(src string, msg int) {
+	for _, dst := range s.neighbors {
+		if dst == src || dst == s.node.ID() {
+			continue
+		}
+
+		s.Broadcasts <- GossipMessage{dst, msg}
+	}
+}
+
+func (s *Service) GetMessages() []int {
+	s.messagesMu.RLock()
+	messages := make([]int, 0, len(s.messages))
+	for m := range s.messages {
+		messages = append(messages, m)
+	}
+	s.messagesMu.RUnlock()
+
+	return messages
+}
+
+type GossipRequest struct {
+	Type    string
+	Message int
+}
+
+func MakeGossipRequest(message int) GossipRequest {
+	return GossipRequest{"gossip", message}
+}
+
+type GossipResponse struct {
+	Type string
+}
+
+func MakeGossipResponse() GossipResponse {
+	return GossipResponse{"gossip_ok"}
 }
