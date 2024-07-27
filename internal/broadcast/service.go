@@ -3,6 +3,8 @@ package broadcast
 import (
 	"encoding/json"
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
+	"log"
+	"sync"
 )
 
 const Broadcast = "broadcast"
@@ -13,7 +15,8 @@ const Topology = "topology"
 const TopologyOk = "topology_ok"
 
 type BroadcastRequest struct {
-	Message int `json:"message"`
+	Type    string `json:"type"`
+	Message int    `json:"message"`
 }
 
 type BroadcastResponse struct {
@@ -49,12 +52,14 @@ type Service struct {
 	node      *maelstrom.Node
 	neighbors []string
 
-	messages map[int]bool
+	messagesMu sync.Mutex
+	messages   map[int]bool
 }
 
 func MakeService(node *maelstrom.Node) Service {
 	return Service{
 		node, make([]string, 0),
+		sync.Mutex{},
 		make(map[int]bool),
 	}
 }
@@ -64,17 +69,35 @@ func (s *Service) BroadcastHandler(msg maelstrom.Message) error {
 	if err := json.Unmarshal(msg.Body, &request); err != nil {
 		return err
 	}
+	go func() {
+		if err := s.node.Reply(msg, MakeBroadcastResponse()); err != nil {
+			log.Fatal(err)
+		}
+	}()
 
+	s.messagesMu.Lock()
+	if _, exist := s.messages[request.Message]; exist {
+		s.messagesMu.Unlock()
+		return nil
+	}
 	s.messages[request.Message] = true
+	for _, n := range s.neighbors {
+		go func(node string) {
+			_ = s.node.Send(node, request)
+		}(n)
+	}
+	s.messagesMu.Unlock()
 
-	return s.node.Reply(msg, MakeBroadcastResponse())
+	return nil
 }
 
 func (s *Service) ReadHandler(msg maelstrom.Message) error {
+	s.messagesMu.Lock()
 	messages := make([]int, 0, len(s.messages))
 	for m := range s.messages {
 		messages = append(messages, m)
 	}
+	s.messagesMu.Unlock()
 	response := MakeReadResponse(messages)
 	return s.node.Reply(msg, response)
 }
